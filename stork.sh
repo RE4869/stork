@@ -42,10 +42,11 @@ function install_dependencies() {
         sudo apt-get install -y nodejs
     fi
 
-    # 安装 screen
-    if ! command -v screen &> /dev/null; then
-        echo "未找到 screen，正在安装..."
-        sudo apt-get update && sudo apt-get install -y screen
+    # 安装 pm2
+    if ! command -v pm2 &> /dev/null; then
+        echo "未找到 pm2，正在安装..."
+        sudo npm install -g pm2
+        pm2 startup systemd -u $USER --hp $HOME
     fi
 
     echo "环境依赖检测完成！"
@@ -62,6 +63,8 @@ function deploy_stork_node() {
             rm -rf stork
         else
             echo "使用现有目录"
+            cd stork || return
+            goto_configure
             return
         fi
     fi
@@ -71,41 +74,78 @@ function deploy_stork_node() {
         return
     fi
 
-    echo "请输入代理地址（格式：http://代理账号:代理密码@127.0.0.1:8080）："
-    > "stork/proxy.txt"
+    cd stork || return
+
+    goto_configure
+}
+
+# 配置与启动函数
+function goto_configure() {
+    echo "请输入代理地址（格式：http://账号:密码@127.0.0.1:8080）："
+    > "proxy.txt"
     while true; do
         read -p "代理地址（回车结束）：" proxy
         [[ -z "$proxy" ]] && break
-        echo "$proxy" >> "stork/proxy.txt"
+        echo "$proxy" >> "proxy.txt"
     done
 
     # 处理账户信息
-    echo "检查 accounts.js..."
-    if [ -f "stork/accounts.js" ]; then
-        read -p "accounts.js 已存在，是否重新输入？(y/n) " overwrite
-        [[ "$overwrite" =~ ^[Yy]$ ]] && rm -f "stork/accounts.js"
+    echo "检查 accounts.json..."
+    if [ -f "accounts.json" ]; then
+        read -p "accounts.json 已存在，是否重新输入？(y/n) " overwrite
+        [[ "$overwrite" =~ ^[Yy]$ ]] && rm -f "accounts.json"
     fi
 
-    if [ ! -f "stork/accounts.js" ]; then
-        echo "export const accounts = [" > "stork/accounts.js"
+    if [ ! -f "accounts.json" ]; then
+        echo "[" > "accounts.json"
+        first=1
         while true; do
             read -p "邮箱：" username
             [[ -z "$username" ]] && break
             read -p "密码：" password
-            echo "  { username: \"$username\", password: \"$password\" }," >> "stork/accounts.js"
+            if [ $first -eq 1 ]; then
+                echo "  { \"username\": \"$username\", \"password\": \"$password\" }" >> "accounts.json"
+                first=0
+            else
+                echo "  ,{ \"username\": \"$username\", \"password\": \"$password\" }" >> "accounts.json"
+            fi
         done
-        echo "];" >> "stork/accounts.js"
+        echo "]" >> "accounts.json"
     fi
 
-    cd stork || exit
+    echo "安装依赖..."
     npm install
+    npm install chalk@4
 
-    # 启动项目，并将输出重定向到日志文件
-    screen -S stork -dm bash -c "cd ~/stork && npm start"
+    # 创建 PM2 配置文件（如果不存在）
+    if [ ! -f "ecosystem.config.js" ]; then
+        cat > ecosystem.config.js <<EOF
+module.exports = {
+  apps: [
+    {
+      name: "stork",
+      script: "./index.cjs",
+      watch: false,
+      env: {
+        NODE_ENV: "production"
+      }
+    }
+  ]
+};
+EOF
+    fi
 
-    echo "项目已启动，使用 'screen -r stork' 查看日志 "
+    # 使用 PM2 启动
+    pm2 delete stork 2>/dev/null
+    pm2 start ecosystem.config.js
+    pm2 save
 
-    # 提示用户按任意键返回主菜单
+    echo "Stork 节点已通过 PM2 启动。"
+    echo "查看日志: pm2 logs stork"
+    echo "查看状态: pm2 status"
+    echo "停止服务: pm2 stop stork"
+    echo "重启服务: pm2 restart stork"
+
     read -n 1 -s -r -p "按任意键返回主菜单..."
     main_menu
 }
